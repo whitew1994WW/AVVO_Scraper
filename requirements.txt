@@ -1,4 +1,4 @@
 wheel
 PyDispatcher>= 1.26.8
 scrapy==2.7.1 
-git+https://github.com/whitew1994WW/scrapy-headless
+tqdm
