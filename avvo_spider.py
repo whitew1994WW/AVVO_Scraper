@@ -285,8 +285,7 @@ def main(event, context):
         {
             "BOT_NAME": "avvo_spider",
             "ROBOTSTXT_OBEY": False,
-            "DOWNLOAD_DELAY": 0.1,
-            "CONCURRENT_REQUESTS_PER_IP": 16,
+            "CONCURRENT_REQUESTS": 16,
             "COOKIES_ENABLED": True,
             "ITEM_PIPELINES": {
                 AvvoLawyerPipeline: 300,
