@@ -23,6 +23,7 @@ logger.setLevel(logging.DEBUG)
 OUTPUT_FILENAME = 'lawyer_details.json'
 LINK_OUTPUT_FILENAME = 'lawyer_linke.json'
 NO_LAWYERS_PER_PAGE = 20
+CURRENT_PAGE_FILENAME = 'current_page.txt'
 
 class AvvoSpider(scrapy.Spider):
     name = "avvo_spider"
@@ -35,8 +36,7 @@ class AvvoSpider(scrapy.Spider):
         'Upgrade-Insecure-Requests': '1',
         'Accept-Encoding': None,
     }
-    items = {}
-    pbar = None
+    no_lawyer_links_processed = {}
     def start_requests(self) -> List[scrapy.Request]:
         """
         Gets the starting page, which is a single search that returns all the laywers stored on avvo
@@ -51,7 +51,6 @@ class AvvoSpider(scrapy.Spider):
         ]
         print(f'the headers are {category_pages[0].headers}')
         self.lawyers_pages_pipeline = AvvoLawyerPagesPipeline()
-        self.lawyers_pipeline = AvvoLawyerPipeline()
         return category_pages
 
     def extract_laywer_pages(self, response):
@@ -77,31 +76,43 @@ class AvvoSpider(scrapy.Spider):
             new_request = scrapy.Request(
                 link, 
                 callback=self.extract_laywers,
-                headers=self.headers
+                headers=self.headers,
+                cb_kwargs={'page_no': i}
             )
             if i == 5:
                 break
             yield new_request
+            
         self.lawyers_pages_pipeline.save_link_dict()
 
-        # Now iterate over the lawyers
-        lawyer_links = set()
-        for page, links in self.lawyers_pages_pipeline.link_dict.items():
-            lawyer_links.update(links)
-        self.pbar = tqdm(total=len(lawyer_links))
-            
-        for link in lawyer_links:
-            # Skip if already saved
-            if link in self.lawyers_pipeline.lawyer_dict:
-                self.pbar.update(1)
-                continue
-            new_request = scrapy.Request(
-                link, 
-                headers=self.headers,
-            )
-            yield new_request
 
-    def extract_laywers(self, response):
+        # Dont repeat the pages already scraped
+        current_page  = self.get_current_page()
+            
+        print(f'Resuming from page {current_page}')
+        for i in tqdm(range(current_page, no_pages+1)):
+            page_links = self.lawyers_pages_pipeline.link_dict[i]
+            for link in page_links:
+                new_request = scrapy.Request(
+                    link, 
+                    headers=self.headers,
+                    cb_kwargs={'page_no': i}
+                )
+                yield new_request
+    
+    def get_current_page(self):
+        if os.path.exists(CURRENT_PAGE_FILENAME):
+            with open(CURRENT_PAGE_FILENAME, 'r') as f:
+                return int(f.read())
+        else:
+            return 1
+    
+    def save_current_page(self, current_page):
+        print(f'Scraped page {current_page}')
+        with open(CURRENT_PAGE_FILENAME, 'w') as f:
+            f.write(str(current_page))
+
+    def extract_laywers(self, response, page_no = None):
         """
         From a page with N lawyers extract the indvidual links to each lawyer
         """
@@ -112,13 +123,20 @@ class AvvoSpider(scrapy.Spider):
         ).getall()
         lawyer_links = ['https://www.avvo.com' + link for link in lawyer_links]
         print(f'The links are {lawyer_links}')
-        self.lawyers_pages_pipeline.process_link(response.url, lawyer_links)
+        self.lawyers_pages_pipeline.process_link(response.url, lawyer_links, page_no)
 
-    def parse(self, response):
+    def parse(self, response, page_no):
         """
         Parse each lawyers page individually
         """
-        self.pbar.update(1)
+        # If the total amount of lawyers has been scraped the save the current page
+        if page_no in self.no_lawyer_links_processed:
+            self.no_lawyer_links_processed[page_no] += 1
+            if self.no_lawyer_links_processed[page_no] == 20:
+                self.save_current_page(page_no)
+        else:
+            self.no_lawyer_links_processed[page_no] = 1
+
         logger.debug("Parsing Item")
         item = AvvoItem()
 
@@ -178,56 +196,36 @@ class AvvoSpider(scrapy.Spider):
         return resume
 
 
-
-        
-
-
 class AvvoLawyerPipeline:
-    """Pipeline class for processing Avvo lawyer data in a Scrapy spider."""
+    first = True
 
-    no_lawyers_saved = 0
-    save_frequency = 10
-
-    def __init__(self, *args, **kwargs):
-        self.lawyer_dict = {}
-        super().__init__(*args, **kwargs)
-
-    def process_item(self, item, spider):
-        """Process a scraped item from the Avvo spider.
-
-        Parameters:
-        - item (dict): A dictionary representing a lawyer's data, as scraped by the spider.
-        - spider (Spider): The Avvo spider instance that scraped the item.
-        """
-        self.no_lawyers_saved += 1
-        self.lawyer_dict[item['avvo_url']] = item.__dict__['_values']
-        if self.no_lawyers_saved % self.save_frequency:
-            self.save_lawyer_dict()
-
+    def process_item(self, item, spider):  # default method
+        # calling dumps to create json data.
+        if self.first:
+            line = "\n" + json.dumps(dict(item))
+            self.first = False
+        else:
+            line = ",\n" + json.dumps(dict(item))
+        # converting item to dict above, since dumps only intakes dict.
+        self.file.write(line)  # writing content in output file.
+        return item
 
     def open_spider(self, spider):
-        """Initialize the pipeline when the Avvo spider starts.
-
-        Parameters:
-        - spider (Spider): The Avvo spider instance that is starting up.
-        """
-        if not os.path.exists(OUTPUT_FILENAME):
-            self.lawyer_dict = {}
+        if os.path.exists(OUTPUT_FILENAME):
+            self.file = open(
+                OUTPUT_FILENAME,
+                "a+",
+            )
         else:
-            self.lawyer_dict = json.loads(open(OUTPUT_FILENAME, 'r').read())
+            self.file = open(
+                OUTPUT_FILENAME,
+                "w",
+            )
+            self.file.write("[")
 
     def close_spider(self, spider):
-        """Perform final tasks when the Avvo spider closes.
-
-        Parameters:
-        - spider (Spider): The Avvo spider instance that is closing.
-        """
-        self.save_lawyer_dict()
-        
-    def save_lawyer_dict(self):
-        """Save the lawyer data dictionary to a JSON file."""
-        with open(OUTPUT_FILENAME, 'w') as f:
-            json.dump(self.lawyer_dict, f)
+        self.file.write("]")
+        self.file.close()
 
 
 class AvvoLawyerPagesPipeline:
@@ -245,7 +243,7 @@ class AvvoLawyerPagesPipeline:
         else:
             self.link_dict = json.loads(open(LINK_OUTPUT_FILENAME, 'r').read())
 
-    def process_link(self, link, lawyer_links):
+    def process_link(self, link, lawyer_links, page_no):
         """Process a scraped item from the Avvo spider.
 
         Parameters:
@@ -253,7 +251,7 @@ class AvvoLawyerPagesPipeline:
         - spider (Spider): The Avvo spider instance that scraped the item.
         """
         self.no_pages_saved += 1
-        self.link_dict[link] = lawyer_links
+        self.link_dict[page_no] = lawyer_links
         if self.no_pages_saved % self.save_frequency:
             self.save_link_dict()
 
@@ -290,13 +288,15 @@ def main(event, context):
             "ITEM_PIPELINES": {
                 AvvoLawyerPipeline: 300,
             },
+            "CONCURRENT_REQUESTS_PER_DOMAIN": 32,
+            "CONCRRENT_ITEMS": 64,
             "REQUEST_FINGERPRINTER_IMPLEMENTATION": "2.7",
             "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
             "DOWNLOAD_HANDLERS": {
                 'https': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
                 'http': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
             },
-            'LOG_ENABLED': False
+            #'LOG_ENABLED': False
         }
     )
 

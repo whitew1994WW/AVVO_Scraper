@@ -2,3 +2,4 @@ wheel
 PyDispatcher>= 1.26.8
 scrapy==2.7.1 
 tqdm
+h2
