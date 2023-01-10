@@ -23,7 +23,7 @@ logger.setLevel(logging.DEBUG)
 OUTPUT_FILENAME = 'lawyer_details.json'
 LINK_OUTPUT_FILENAME = 'lawyer_linke.json'
 NO_LAWYERS_PER_PAGE = 20
-CURRENT_PAGE_FILENAME = 'current_page.txt'
+CURRENT_PAGES_SCRAPED_FILENAME = 'pages_scraped.txt'
 
 class AvvoSpider(scrapy.Spider):
     name = "avvo_spider"
@@ -36,7 +36,7 @@ class AvvoSpider(scrapy.Spider):
         'Upgrade-Insecure-Requests': '1',
         'Accept-Encoding': None,
     }
-    no_lawyer_links_processed = {}
+    lawyers_scraped = 0 
     def start_requests(self) -> List[scrapy.Request]:
         """
         Gets the starting page, which is a single search that returns all the laywers stored on avvo
@@ -50,7 +50,8 @@ class AvvoSpider(scrapy.Spider):
             )
         ]
         print(f'the headers are {category_pages[0].headers}')
-        self.lawyers_pages_pipeline = AvvoLawyerPagesPipeline()
+        #self.pages_scraped = self.get_pages_scraped()
+        
         return category_pages
 
     def extract_laywer_pages(self, response):
@@ -66,135 +67,88 @@ class AvvoSpider(scrapy.Spider):
             raise ValueError('Failed to scrape the number of links from the match')
         no_pages = (number_links // NO_LAWYERS_PER_PAGE) + 1
         print(f'There will be {no_pages} pages of lawyers to scrape')
-
         # Extract all the lawyer links first
-        for i in tqdm(range(1, no_pages + 1)):
+        for i in range(1, 500 + 1):
             link = f"https://www.avvo.com/all-lawyers/sitemap.xml?page={i}"
-            # If the link has already been scraped then skip it
-            if link in self.lawyers_pages_pipeline.link_dict:
-                continue
+            # If the page has already been scraped then skip it
+            #if i in self.pages_scraped:
+            #    continue
             new_request = scrapy.Request(
                 link, 
-                callback=self.extract_laywers,
                 headers=self.headers,
                 cb_kwargs={'page_no': i}
             )
-            if i == 5:
-                break
             yield new_request
             
-        self.lawyers_pages_pipeline.save_link_dict()
-
-
-        # Dont repeat the pages already scraped
-        current_page  = self.get_current_page()
-            
-        print(f'Resuming from page {current_page}')
-        for i in tqdm(range(current_page, no_pages+1)):
-            page_links = self.lawyers_pages_pipeline.link_dict[i]
-            for link in page_links:
-                new_request = scrapy.Request(
-                    link, 
-                    headers=self.headers,
-                    cb_kwargs={'page_no': i}
-                )
-                yield new_request
     
-    def get_current_page(self):
-        if os.path.exists(CURRENT_PAGE_FILENAME):
-            with open(CURRENT_PAGE_FILENAME, 'r') as f:
-                return int(f.read())
+    def get_pages_scraped(self):
+        if os.path.exists(CURRENT_PAGES_SCRAPED_FILENAME):
+            with open(CURRENT_PAGES_SCRAPED_FILENAME, 'r') as f:
+                return json.load(f)
         else:
-            return 1
-    
-    def save_current_page(self, current_page):
-        print(f'Scraped page {current_page}')
-        with open(CURRENT_PAGE_FILENAME, 'w') as f:
-            f.write(str(current_page))
-
-    def extract_laywers(self, response, page_no = None):
+            return []
+    """ 
+    def save_current_pages_scraped(self):
+        if len(self.pages_scraped) % 100:
+            print(f'Scraped {len(self.pages_scraped)} pages')
+        with open(CURRENT_PAGES_SCRAPED_FILENAME, 'w') as f:
+           json.dump(self.pages_scraped, f) 
+    """
+    def parse(self, response, page_no = None):
         """
         From a page with N lawyers extract the indvidual links to each lawyer
         """
-        logger.debug(f'On page {response.url}, extracting the lawyer pages')
-        print('Extracting lawyers from page')
-        lawyer_links = response.xpath(
-            '//section/a[contains(@class, "search-result-lawyer-name")]/@href'
-        ).getall()
-        lawyer_links = ['https://www.avvo.com' + link for link in lawyer_links]
-        print(f'The links are {lawyer_links}')
-        self.lawyers_pages_pipeline.process_link(response.url, lawyer_links, page_no)
-
-    def parse(self, response, page_no):
-        """
-        Parse each lawyers page individually
-        """
-        # If the total amount of lawyers has been scraped the save the current page
-        if page_no in self.no_lawyer_links_processed:
-            self.no_lawyer_links_processed[page_no] += 1
-            if self.no_lawyer_links_processed[page_no] == 20:
-                self.save_current_page(page_no)
-        else:
-            self.no_lawyer_links_processed[page_no] = 1
-
-        logger.debug("Parsing Item")
-        item = AvvoItem()
-
-        item['timestamp'] = time.time() 
-        item['lawyer_name'] = response.xpath('//h1[@class = "lawyer-name"]/span/text()').get() 
-        item['bio'] = [response.xpath('//div[@class="about-tagline"]/span/text()').get()] + response.xpath('//div[@id="bioExpandCollapse"]/p/text()').getall()
-        item['phone_number'] = response.xpath('//span[@class="overridable-lawyer-phone-copy"]/text()').get() 
-        item['addresses'] = self.get_addresses(response) 
-        item['state'] = response.xpath('//li[@data-name="state"]/a/span/text()').get() 
-        item['city'] = response.xpath('//li[@data-name="city"]/a/span/text()').get() 
-        item['practice_area'] = response.xpath('//li[@data-name="practice_area"]/a/span/text()').get() 
-        item['number_of_reviews'] = response.xpath('//div[@class="client-reviews"]/a/text()').get() 
-        item['rating'] = response.xpath('//span[@class="rating-value"]/text()').get() 
-        item['years_liscenced'] = response.xpath('//p[contains(@class, "header-licensed")]/text()').get() 
-        item['states_registered'] = self.get_states_registered(response)
-        item['resume'] = self.get_resume(response) 
-        item['avvo_url'] = response.url 
-        yield item
         
+        lawyer_sections = response.xpath('//ul[contains(@class, "lawyer-search-results")]/li')
+        lawyers = []
+        for section in lawyer_sections:
+            lawyer_item = self.parse_lawyer_section(section) 
+            self.lawyers_scraped += 1
+            if (self.lawyers_scraped % 2000) == 0:
+                print(f'Scraped {self.lawyers_scraped} lawyers')
+            yield lawyer_item
 
-    def get_addresses(self, response):
-        address_sections = response.xpath('//div[@class="contact-item"]')
-        addresses = []
-        for address in address_sections:
-            new_address = {}
-            new_address['law_office'] = address.xpath('//div[@class="contact-firm"]/text()').get()
-            new_address['phone_number'] = address.xpath('//span[@class="overridable-lawyer-phone-copy"]/text()').get()
-            new_address['address'] = address.xpath('//div[@class="contact-address"]/div/div/text()').getall()
-            new_address['website'] = address.xpath('//div[contains(@class, "contact-website")]/span/a/text()').get()
-            addresses.append(new_address)
-        return addresses 
+        #self.pages_scraped.append(page_no)
+        #self.save_current_pages_scraped()
 
-    def get_states_registered(self, response):
-        states_sections = response.xpath('//div[@class="single-license"]')
-        states = []
-        for state_section in states_sections:
-            state = {}
-            state['state'] = state_section.xpath('//div[@class="license-state"]/span[@class="value"]/text()').get() 
-            state['status'] = state_section.xpath('//div[@class="license-status"]/span[@class="value"]/text()').get()
-            state['acquired'] = state_section.xpath('//div[@class="license-acquired"]/span[@class="value"]/text()').get()
-            state['updated'] = state_section.xpath('//div[@class="license-updated"]/span[@class="value"]/text()').get()
-            states.append(state)
-        return states
+   
+    def parse_lawyer_section(self, lawyer_section):
+        lawyer_item = AvvoItem()
+        lawyer_item['timestamp'] = time.time()
+        lawyer_item['lawyer_name'] = lawyer_section.xpath('.//a[contains(@class, "search-result-lawyer-name")]/text()').get()
+        lawyer_item['bio'] = lawyer_section.xpath('.//div[contains(@class, "lawyer-search-result-intro")]/text()').get()
+        lawyer_item['phone_number'] = lawyer_section.xpath('.//span[contains(@class, "overridable-lawyer-phone-copy")]/text()').get()
+        lawyer_item['website'] = lawyer_section.xpath('.//a[contains(@class, "v-cta-organic-desktop-website")]/@href').get()
+        lawyer_item['liscence'] = lawyer_section.xpath('.//div[contains(@id, "expanded-preview-data")]/section[3]/div[2]/text()').get()
+        lawyer_item['practice_area'] = lawyer_section.xpath('.//div[contains(@id, "expanded-preview-data")]/section[1]/div[2]//text()').getall()
+        lawyer_item['cost'] = lawyer_section.xpath('.//div[contains(@id, "expanded-preview-data")]/section[2]/div[2]//text()').getall()
+        lawyer_item['number_of_reviews'] = lawyer_section.xpath('.//div[@class="rating-flex"]/section/a/small/text()').get()
+        lawyer_item['rating'] = lawyer_section.xpath('.//div[@class="rating-flex"]/section/a/span/span[6]/text()').get()
+        lawyer_item['years_liscenced'] = lawyer_section.xpath('.//time/text()').get()
+        lawyer_item['avvo_rating'] = lawyer_section.xpath('.//div[@class="v-organic-rating-section"]/small/strong/text()').get()
+        lawyer_item['avvo_url'] = 'https://www.avvo.com' + lawyer_section.xpath('.//a[contains(@class, "search-result-lawyer-name")]/@href').get() 
+        lawyer_item['lawyer_additional_json'] = lawyer_section.xpath('.//div/div/script/text()').get()
+        return lawyer_item
 
-    def get_resume(self, response):
-        resume_sections = response.xpath('//div[@class="resume-section"]')
-        resume = []
-        for section in resume_sections:
-            resume_section = {}
-            resume_section['title'] = section.xpath('//h2/text()').get()
-            resume_sub_sections = section.xpath('//ul')
-            sub_sections = []
-            for sub_section in resume_sub_sections:
-                sub_sections.append(sub_section.xpath('//li/text()').getall())
-            resume_section['subsections'] = sub_sections
-            resume.append(resume_section)
-        return resume
 
+
+
+class AvvoItem(scrapy.Item):
+    timestamp = scrapy.Field()
+    lawyer_name = scrapy.Field()
+    bio = scrapy.Field()
+    phone_number = scrapy.Field()
+    address = scrapy.Field()
+    website = scrapy.Field()
+    liscence = scrapy.Field()
+    practice_area = scrapy.Field()
+    cost = scrapy.Field()
+    number_of_reviews = scrapy.Field()
+    rating = scrapy.Field()
+    years_liscenced = scrapy.Field()
+    avvo_url = scrapy.Field()
+    avvo_rating = scrapy.Field()
+    lawyer_additional_json = scrapy.Field()
 
 class AvvoLawyerPipeline:
     first = True
@@ -228,80 +182,138 @@ class AvvoLawyerPipeline:
         self.file.close()
 
 
-class AvvoLawyerPagesPipeline:
-    """Pipeline class for saving lawyer link pages """
-    no_pages_saved = 0
-    save_frequency = 10
-    def __init__(self):
-        """Initialize the pipeline when the Avvo spider starts.
-
-        Parameters:
-        - spider (Spider): The Avvo spider instance that is starting up.
-        """
-        if not os.path.exists(LINK_OUTPUT_FILENAME):
-            self.link_dict = {} 
-        else:
-            self.link_dict = json.loads(open(LINK_OUTPUT_FILENAME, 'r').read())
-
-    def process_link(self, link, lawyer_links, page_no):
-        """Process a scraped item from the Avvo spider.
-
-        Parameters:
-        - item (dict): A dictionary representing a lawyer's data, as scraped by the spider.
-        - spider (Spider): The Avvo spider instance that scraped the item.
-        """
-        self.no_pages_saved += 1
-        self.link_dict[page_no] = lawyer_links
-        if self.no_pages_saved % self.save_frequency:
-            self.save_link_dict()
-
-    def save_link_dict(self):
-        """Save the lawyer data dictionary to a JSON file."""
-        with open(LINK_OUTPUT_FILENAME, 'w') as f:
-            json.dump(self.link_dict, f)
-
-class AvvoItem(scrapy.Item):
-    timestamp = scrapy.Field()
-    lawyer_name = scrapy.Field()
-    bio = scrapy.Field()
-    phone_number = scrapy.Field()
-    addresses = scrapy.Field()
-    website = scrapy.Field()
-    state = scrapy.Field()
-    city = scrapy.Field()
-    practice_area = scrapy.Field()
-    number_of_reviews = scrapy.Field()
-    rating = scrapy.Field()
-    years_liscenced = scrapy.Field()
-    states_registered = scrapy.Field()
-    resume = scrapy.Field()
-    avvo_url = scrapy.Field()
-
-
 def main(event, context):
     process = CrawlerProcess(
         {
             "BOT_NAME": "avvo_spider",
             "ROBOTSTXT_OBEY": False,
-            "CONCURRENT_REQUESTS": 16,
+            "CONCURRENT_REQUESTS": 4,
             "COOKIES_ENABLED": True,
             "ITEM_PIPELINES": {
                 AvvoLawyerPipeline: 300,
             },
-            "CONCURRENT_REQUESTS_PER_DOMAIN": 32,
-            "CONCRRENT_ITEMS": 64,
+            "DOWNLOAD_DELAY": 1,
+            "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
+            "CONCRRENT_ITEMS": 16,
             "REQUEST_FINGERPRINTER_IMPLEMENTATION": "2.7",
             "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
             "DOWNLOAD_HANDLERS": {
+                #'https': 'scrapy_h2_proxy.H2DownloadHandler',
                 'https': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
                 'http': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
             },
+            "DOWNLOADER_MIDDLEWARES": {
+                'rotating_proxies.middlewares.RotatingProxyMiddleware': 610,
+                'rotating_proxies.middlewares.BanDetectionMiddleware': 620,            
+            },
+            "ROTATING_PROXY_LIST": [
+                "https://163.116.158.183:8081",
+                "https://61.220.170.133:8000",
+                "https://141.147.158.11:8080",
+                "https://163.116.158.142:8081",
+                "https://163.116.158.115:8081",
+                "https://163.116.177.30:808",
+                "https://174.70.1.210:8080",
+                "https://158.69.53.98:9300",
+                "https://163.116.158.23:8081",
+                "https://163.116.177.47:808",
+                "https://163.116.158.25:8081",
+                "https://163.116.177.48:808",
+                "https://80.169.156.52:80",
+                "https://200.105.215.22:33630",
+                "https://212.80.213.94:8080",
+                "https://163.116.177.44:808",
+                "https://154.239.1.77:1981",
+                "https://163.116.177.31:808",
+                "https://47.243.180.142:808",
+                "https://194.87.188.114:8000",
+                "https://187.130.139.197:8080",
+                "https://163.116.177.51:808",
+                "https://163.116.158.118:8081",
+                "https://163.116.177.42:808",
+                "https://109.206.252.234:80",
+                "https://163.116.158.117:8081",
+                "https://163.116.248.33:808",
+                "https://90.114.27.196:3128",
+                "https://206.127.254.245:3129",
+                "https://52.23.175.222:8118",
+                "https://45.92.94.190:9090",
+                "https://163.116.248.49:808",
+                "https://163.116.248.46:808",
+                "https://213.59.156.119:3128",
+                "https://51.79.50.22:9300",
+                "https://185.15.172.212:3128",
+                "https://107.172.73.179:7890",
+                "https://89.218.186.134:3128",
+                "https://123.202.82.245:3128",
+                "https://54.207.220.66:80",
+                "https://198.27.74.6:9300",
+                "https://87.245.186.149:8090",
+                "https://177.82.85.209:3128",
+                "https://161.77.218.105:3129",
+                "https://161.77.218.197:3129",
+                "https://179.50.16.46:8111",
+                "https://111.225.153.254:8089",
+                "https://13.114.216.75:80",
+                "https://185.198.61.146:3128",
+                "https://168.138.33.70:8080",
+                "https://162.211.181.130:808",
+                "https://5.189.184.6:80",
+                "https://45.91.133.137:8080",
+                "https://163.116.177.39:808",
+                "https://163.116.177.43:808",
+                "https://163.116.177.33:808",
+                "https://49.0.2.242:8090",
+                "https://47.243.55.21:8080",
+                "https://158.69.52.218:9300",
+                "https://217.6.28.219:80",
+                "https://163.116.177.50:808",
+                "https://163.116.177.45:808",
+                "https://163.116.177.49:808",
+                "https://44.230.152.143:80",
+                "https://181.94.197.42:8080",
+                "https://163.116.177.46:808",
+                "https://190.61.88.147:8080",
+                "https://163.116.177.32:808",
+                "https://163.116.158.182:8081",
+                "https://163.116.158.28:8081",
+                "https://163.116.177.34:808",
+                "https://212.14.243.29:8080",
+                "https://163.116.248.40:808",
+                "https://45.250.163.19:8081",
+                "https://103.92.26.190:4002",
+                "https://163.116.248.55:808",
+                "https://163.116.158.143:8081",
+                "https://163.116.248.45:808",
+                "https://163.116.158.27:8081",
+                "https://31.59.12.126:8080",
+                "https://115.144.101.200:10000",
+                "https://104.223.135.178:10000",
+                "https://46.225.237.146:3128",
+                "https://91.206.15.125:3128",
+                "https://47.244.2.19:3128",
+                "https://47.243.121.74:3128",
+                "https://143.198.166.215:3128",
+                "https://178.47.139.151:35102",
+                "https://82.66.75.98:49400",
+                "https://102.177.192.84:3128",
+                "https://163.116.248.51:808",
+                "https://157.245.27.9:3128",
+                "https://59.15.154.69:13128",
+                "https://198.59.191.234:8080",
+                "https://13.127.4.162:3128",
+                "https://134.238.252.143:8080",
+                "https://163.116.248.56:808",
+                "https://205.185.126.246:3128",
+                "https://34.84.142.87:3128",
+                "https://163.116.248.39:808",
+            ]
             #'LOG_ENABLED': False
         }
     )
 
     sp_logger = logging.getLogger('scrapy')
-    sp_logger.setLevel(logging.INFO)
+    sp_logger.setLevel(logging.DEBUG)
     process.crawl(AvvoSpider)
     process.start() 
 
