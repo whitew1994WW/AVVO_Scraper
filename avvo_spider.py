@@ -197,15 +197,15 @@ def main(event, context):
             "CONCRRENT_ITEMS": 16,
             "REQUEST_FINGERPRINTER_IMPLEMENTATION": "2.7",
             "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
-            "DOWNLOAD_HANDLERS": {
-                #'https': 'scrapy_h2_proxy.H2DownloadHandler',
-                'https': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
-                'http': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
-            },
-            "DOWNLOADER_MIDDLEWARES": {
-                'rotating_proxies.middlewares.RotatingProxyMiddleware': 610,
-                'rotating_proxies.middlewares.BanDetectionMiddleware': 620,            
-            },
+           #"DOWNLOAD_HANDLERS": {
+           #    #'https': 'scrapy_h2_proxy.H2DownloadHandler',
+           #    'https': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
+           #    'http': 'scrapy.core.downloader.handlers.http2.H2DownloadHandler',
+           #},
+           #"DOWNLOADER_MIDDLEWARES": {
+           #    'rotating_proxies.middlewares.RotatingProxyMiddleware': 610,
+           #    'rotating_proxies.middlewares.BanDetectionMiddleware': 620,            
+           #},
             "ROTATING_PROXY_LIST": [
                 "https://163.116.158.183:8081",
                 "https://61.220.170.133:8000",
